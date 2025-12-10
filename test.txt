@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>三麗鷗打排球 (V6.0 觸控優化版 - 重構)</title>
+    <style>
+        /* 基本樣式 */
+        :root {
+            --bg: #202020;
+            --panel: rgba(255,255,255,0.95);
+            --accent: #FF69B4;
+        }
+        html,body {
+            height:100%;
+            margin:0;
+            padding:0;
+            background: var(--bg);
+            color:#fff;
+            font-family: "Arial", "Noto Sans TC", sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+        }
+        #app {
+            min-height:100%;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            padding:20px;
+            box-sizing:border-box;
+            flex-direction:column;
+        }
+        #game-area {
+            display:flex;
+            flex-direction:column;
+            gap:10px;
+            align-items:center;
+        }
+        #game-container {
+            position:relative;
+            outline:none;
+            box-shadow:0 0 40px rgba(0,0,0,0.8);
+            border-radius:8px;
+            overflow:visible;
+            background: linear-gradient(to bottom, #87CEEB 0%, #E0F7FA 100%);
+        }
+        /* canvas 固定內部解析度，但在行動裝置縮放顯示 */
+        canvas {
+            display:block;
+            width:100%;
+            max-width:648px;
+            height:auto;
+            border:5px solid #fff;
+            box-sizing:border-box;
+            background:transparent;
+        }
+        #ui-layer {
+            position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none;
+        }
+        .menu-box {
+            pointer-events:auto;
+            background:var(--panel);
+            color:#333;
+            padding:24px 36px;
+            border-radius:20px;
+            border:6px solid var(--accent);
+            min-width:320px;
+            text-align:center;
+        }
+        h1 { margin:0 0 16px 0; color:#FF1493; font-size:28px; }
+        .menu-item { margin:8px 0; padding:10px; cursor:pointer; border-radius:10px; font-weight:bold; color:#555; border:3px solid transparent; }
+        .menu-item.selected { background:var(--accent); color:#fff; border-color:#FF1493; transform:scale(1.03); }
+        .hidden { display:none !important; }
+        #top-bar {
+            position:absolute; top:0; left:0; width:100%; display:flex; justify-content:space-between; box-sizing:border-box;
+            padding:8px 12px; background:rgba(0,0,0,0.6); color:#fff; z-index:60; font-size:13px;
+            pointer-events:auto;
+        }
+        #score-board { position:absolute; top:54px; width:100%; display:flex; justify-content:space-around; font-size:48px; font-weight:bold; text-shadow:2px 2px 4px rgba(0,0,0,0.6); pointer-events:none; z-index:50; color:#fff; }
+        .p1-score { color:#FF4081 } .p2-score { color:#2196F3 }
+        #click-to-start {
+            position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.7); color:#fff; font-size:22px; z-index:999; cursor:pointer;
+        }
+
+        /* 虛擬搖桿 */
+        #touch-controls {
+            display:flex;
+            justify-content:space-between;
+            width:100%;
+            max-width:648px;
+            box-sizing:border-box;
+            pointer-events:auto;
+            align-items:center;
+            padding:6px 8px;
+            gap:8px;
+            z-index:90;
+        }
+        .control-area { display:flex; align-items:center; gap:12px; width:50%; box-sizing:border-box; padding:6px; }
+        .dpad-container {
+            width:88px; height:88px; display:grid; grid-template-columns:repeat(3,1fr); grid-template-rows:repeat(3,1fr);
+            background: rgba(100,100,100,0.18); border-radius:12px; touch-action:none;
+        }
+        .dpad-button {
+            display:flex; align-items:center; justify-content:center; font-size:16px; color:#fff;
+            user-select:none; -webkit-user-select:none; cursor:pointer; border:1px solid rgba(255,255,255,0.12);
+        }
+        .dpad-button:active { background: rgba(255,255,255,0.12); transform:translateY(0); }
+        .special-button {
+            width:68px; height:68px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:18px;
+            background:#FF4081; border:4px solid #FF1493; box-shadow:0 3px #FF1493; color:#fff; cursor:pointer;
+        }
+        .special-button:active { transform:translateY(3px); box-shadow:0 0 #FF1493; }
+
+        /* 忽略某些 dpad cell */
+        .dpad-empty { visibility:hidden; pointer-events:none; opacity:0; }
+
+        /* 響應式：手機小螢幕間距調整 */
+        @media (max-width:420px) {
+            .menu-box { min-width:260px; padding:18px; }
+            #top-bar { font-size:12px; }
+            #score-board { font-size:36px; top:44px; }
+        }
+    </style>
+</head>
+<body>
+    <div id="click-to-start">👆 點擊或觸碰畫面開始遊戲 👆</div>
+
+    <div id="app">
+        <div id="game-area">
+            <div id="game-container" tabindex="0">
+                <div id="top-bar">
+                    <span>操作: 1P(R跳 / D左 / F蹲 / G右 + <span style="color:red">J</span>殺球) | 2P(↑←↓→ + Enter殺球)</span>
+                    <span>選項: Esc | 練習: <span id="practice-status">關</span></span>
+                </div>
+                <div id="score-board" class="hidden"><div class="p1-score">0</div><div class="p2-score">0</div></div>
+
+                <!-- canvas 內部解析度固定，但 CSS 尺寸會縮放 -->
+                <canvas id="gameCanvas" width="648" height="456"></canvas>
+
+                <div id="ui-layer">
+                    <div id="main-menu" class="menu-box">
+                        <h1>🌸 三麗鷗排球 🌸</h1>
+                        <div class="menu-item selected" id="menu-1p">1人 (1P vs COM)</div>
+                        <div class="menu-item" id="menu-2p">2人 (1P vs 2P)</div>
+                        <div class="menu-item" id="menu-opt">選項 (設定)</div>
+                        <div style="margin-top:10px; color:#666; font-weight:bold;">使用 <span style="color:#FF1493">R G</span> 選擇，按 <span style="color:red">J</span> 或 <span style="color:blue">Enter</span> 確定</div>
+                    </div>
+
+                    <div id="char-select" class="menu-box hidden">
+                        <h1>選擇角色</h1>
+                        <div id="char-p1-select" style="font-size:20px; margin:10px 0; color:#FF4081; font-weight:bold;">1P: Hello Kitty</div>
+                        <div id="char-p2-select" style="font-size:20px; margin:10px 0; color:#2196F3; font-weight:bold;">COM: Kuromi</div>
+                        <div style="color:#666; font-weight:bold;">左右鍵換角，J/Enter 開始</div>
+                    </div>
+
+                    <div id="options-menu" class="menu-box hidden">
+                        <h1>設定</h1>
+                        <div class="menu-item selected" id="opt-diff">難度: 普通</div>
+                        <div class="menu-item" id="opt-prac">練習模式: 關</div>
+                        <div class="menu-item" id="opt-back">回到標題</div>
+                        <div style="color:#666; font-weight:bold; margin-top:8px;">J / Enter 更改</div>
+                    </div>
+
+                    <div id="game-over" class="menu-box hidden">
+                        <h1 id="winner-text">1P WIN!</h1>
+                        <div style="color:#666; font-weight:bold;">按 J 或 Enter 重新開始</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 虛擬搖桿 -->
+            <div id="touch-controls" aria-hidden="false">
+                <div class="control-area p1-controls">
+                    <div class="dpad-container" id="dpad-p1">
+                        <div class="dpad-button dpad-empty"></div>
+                        <div class="dpad-button" data-action="P1_UP" id="dpad-p1-up">R/↑</div>
+                        <div class="dpad-button dpad-empty"></div>
+
+                        <div class="dpad-button dpad-empty"></div>
+                        <div class="dpad-button dpad-empty" id="dpad-p1-center"></div>
+                        <div class="dpad-button" data-action="P1_LEFT" id="dpad-p1-left">D/←</div>
+
+                        <div class="dpad-button" data-action="P1_DOWN" id="dpad-p1-down">F/蹲</div>
+                        <div class="dpad-button dpad-empty"></div>
+                        <div class="dpad-button" data-action="P1_RIGHT" id="dpad-p1-right">G/→</div>
+                    </div>
+                    <div class="special-button" data-action="P1_BTN" id="btn-p1-smash">J</div>
+                </div>
+
+                <div class="control-area p2-controls" style="justify-content:flex-end;">
+                    <div class="special-button" data-action="P2_BTN" id="btn-p2-smash">Enter</div>
+                    <div class="dpad-container" id="dpad-p2">
+                        <div class="dpad-button dpad-empty"></div>
+                        <div class="dpad-button" data-action="P2_UP" id="dpad-p2-up">↑</div>
+                        <div class="dpad-button dpad-empty"></div>
+
+                        <div class="dpad-button" data-action="P2_LEFT" id="dpad-p2-left">←</div>
+                        <div class="dpad-button dpad-empty" id="dpad-p2-center"></div>
+                        <div class="dpad-button" data-action="P2_RIGHT" id="dpad-p2-right">→</div>
+
+                        <div class="dpad-button dpad-empty"></div>
+                        <div class="dpad-button" data-action="P2_DOWN" id="dpad-p2-down">↓/蹲</div>
+                        <div class="dpad-button dpad-empty"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script>
+/* ========= 常數設定 ========= */
+const CANVAS_W = 648;
+const CANVAS_H = 456;
+const GROUND_Y = 396;
+const NET_H = 165;
+const NET_X = CANVAS_W / 2;
+
+const GRAVITY = 0.7;
+const MOVE_SPEED = 5.2;
+const JUMP_POWER = -15.5;
+const BALL_NORMAL_SPEED = 12;
+const BALL_POWER_SPEED = 20;
+
+const P_RADIUS = 36;
+const B_RADIUS = 27;
+
+/* AI 難度設定（使用時會被轉成 {reaction,anticipate,error}） */
+const DIFFICULTY_LIST = [
+    { name: "普通", reaction: 0.55, anticipate: 0.35, error: 0.25 },
+    { name: "困難", reaction: 0.75, anticipate: 0.6, error: 0.12 },
+    { name: "地獄", reaction: 0.9, anticipate: 0.9, error: 0.06 }
+];
+
+const SMASH_TRIGGER_DIST = 60;
+const NET_BOUNCE_TOP = 22.5;
+const SAFE_MARGIN = 5;
+
+/* ========= 全域 state ========= */
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const gameContainer = document.getElementById('game-container');
+const touchControls = document.getElementById('touch-controls');
+
+let state = {
+    screen: 'TITLE', // TITLE, CHAR_SELECT, OPTIONS, GAME, GAMEOVER
+    mode: 1, // 1: vs COM, 2: 2P
+    difficultyIdx: 0,
+    practice: false,
+    score1: 0, score2: 0,
+    p1Char: 0, p2Char: 1,
+    menuIndex: 0, winner: null
+};
+
+/* 鍵位狀態 */
+const keys = {}; // e.g. keys['P1_LEFT'] = true
+
+/* Entity 類別 */
+class Entity {
+    constructor(x,y,r) {
+        this.x = x; this.y = y; this.r = r;
+        this.vx = 0; this.vy = 0;
+        this.isDiving = false;
+        this.jumpBuffer = 0; // 跳躍緩衝
+    }
+}
+
+/* 建立角色與球 */
+const p1 = new Entity(80, GROUND_Y, P_RADIUS);
+const p2 = new Entity(CANVAS_W - 80, GROUND_Y, P_RADIUS);
+const ball = new Entity(80, 120, B_RADIUS);
+ball.rot = 0; ball.isFire = false; ball.isServing = false;
+
+/* 保留你原始角色畫法函式 (繪圖邏輯) */
+function drawKitty(ctx) {
+    ctx.fillStyle = "#0066CC"; ctx.fillRect(-14, -25, 28, 25);
+    ctx.beginPath(); ctx.arc(-8, -20, 4, 0, Math.PI*2); ctx.arc(8, -20, 4, 0, Math.PI*2); ctx.fillStyle="#FFF"; ctx.fill(); 
+    ctx.fillStyle = "#FFF"; ctx.beginPath(); ctx.ellipse(0, -35, 22, 18, 0, 0, Math.PI*2); ctx.fill(); ctx.strokeStyle="#333"; ctx.lineWidth=2; ctx.stroke();
+    ctx.fillStyle = "#FF0000"; ctx.beginPath(); ctx.arc(12, -45, 5, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(12, -45); ctx.lineTo(22, -52); ctx.lineTo(22, -38); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(12, -45); ctx.lineTo(2, -52); ctx.lineTo(2, -38); ctx.fill();
+    ctx.fillStyle="#000"; ctx.beginPath(); ctx.ellipse(-8, -33, 2.5, 4, 0,0,Math.PI*2); ctx.ellipse(8, -33, 2.5, 4, 0,0,Math.PI*2); ctx.fill(); 
+    ctx.fillStyle="#FFD700"; ctx.beginPath(); ctx.ellipse(0, -28, 3, 2, 0,0,Math.PI*2); ctx.fill(); 
+    ctx.strokeStyle="#000"; ctx.lineWidth=1.5; ctx.beginPath();
+    ctx.moveTo(-22,-30); ctx.lineTo(-12,-32); ctx.moveTo(-22,-35); ctx.lineTo(-12,-35); ctx.moveTo(-22,-40); ctx.lineTo(-12,-38);
+    ctx.moveTo(22,-30); ctx.lineTo(12,-32); ctx.moveTo(22,-35); ctx.lineTo(12,-35); ctx.moveTo(22,-40); ctx.lineTo(12,-38); ctx.stroke();
+}
+function drawKuromi(ctx) {
+    ctx.fillStyle = "#FFF"; ctx.beginPath(); ctx.ellipse(0, -15, 15, 15, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#222"; ctx.beginPath();
+    ctx.moveTo(-20, -30); ctx.lineTo(-25, -55); ctx.lineTo(-10, -45); ctx.lineTo(10, -45); ctx.lineTo(25, -55); ctx.lineTo(20, -30);
+    ctx.quadraticCurveTo(0, -20, -20, -30); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(0, -35, 20, 18, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#FFC0CB"; ctx.beginPath(); ctx.arc(0, -42, 6, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#222"; ctx.beginPath(); ctx.arc(-2, -42, 1.5, 0, Math.PI*2); ctx.arc(2, -42, 1.5, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle="#FFF"; ctx.beginPath(); ctx.ellipse(0, -30, 14, 10, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle="#000"; ctx.beginPath(); ctx.ellipse(-5, -30, 2, 3, 0.2,0,Math.PI*2); ctx.ellipse(5, -30, 2, 3, -0.2,0,Math.PI*2); ctx.fill(); 
+    ctx.strokeStyle="#000"; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(-1, -26); ctx.lineTo(1, -26); ctx.stroke(); 
+}
+function drawMelody(ctx) {
+    ctx.fillStyle = "#FFF"; ctx.beginPath(); ctx.ellipse(0, -15, 14, 15, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#FF69B4"; ctx.beginPath(); ctx.ellipse(0, -35, 22, 20, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(-18, -35, 8, 15, 0.5, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(18, -35, 8, 15, -0.5, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle="#FFF"; ctx.beginPath(); ctx.ellipse(0, -32, 16, 14, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle="#552200"; ctx.beginPath(); ctx.ellipse(-6, -32, 2.5, 3.5, 0,0,Math.PI*2); ctx.ellipse(6, -32, 2.5, 3.5, 0,0,Math.PI*2); ctx.fill(); 
+    ctx.fillStyle="#FFD700"; ctx.beginPath(); ctx.ellipse(0, -27, 2, 1.5, 0,0,Math.PI*2); ctx.fill(); 
+    ctx.strokeStyle="#552200"; ctx.lineWidth=1; ctx.beginPath(); ctx.arc(0, -24, 2, 0, Math.PI); ctx.stroke(); 
+}
+function drawCinnamoroll(ctx) {
+    ctx.fillStyle = "#FFF"; ctx.beginPath(); ctx.ellipse(0, -12, 12, 12, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(-12, -8, 5, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(0, -30, 24, 16, 0, 0, Math.PI*2); ctx.fill(); ctx.strokeStyle="#87CEEB"; ctx.lineWidth=1; ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(-28, -32, 12, 8, -0.3, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(28, -32, 12, 8, 0.3, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle="#87CEEB"; ctx.beginPath(); ctx.arc(-8, -30, 2.5, 0, Math.PI*2); ctx.arc(8, -30, 2.5, 0, Math.PI*2); ctx.fill(); 
+    ctx.fillStyle="#FFB6C1"; ctx.beginPath(); ctx.arc(-14, -26, 3, 0, Math.PI*2); ctx.arc(14, -26, 3, 0, Math.PI*2); ctx.fill(); 
+    ctx.strokeStyle="#87CEEB"; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(0, -28, 3, 0.2, Math.PI-0.2); ctx.stroke(); 
+}
+const CHARACTERS = [
+    { name: "Hello Kitty", draw: drawKitty },
+    { name: "酷洛米", draw: drawKuromi },
+    { name: "美樂蒂", draw: drawMelody },
+    { name: "大耳狗", draw: drawCinnamoroll }
+];
+
+/* ========= 初始化 UI 行為 ========= */
+const clickToStart = document.getElementById('click-to-start');
+clickToStart.addEventListener('click', initFocus, {passive:false});
+clickToStart.addEventListener('touchstart', initFocus, {passive:false});
+
+function initFocus(e){
+    if (e) e.preventDefault();
+    clickToStart.style.display = 'none';
+    // 顯示虛擬搖桿
+    touchControls.style.display = 'flex';
+    // focus container for key events
+    gameContainer.focus();
+    resizeCanvasToDisplay();
+    startGameLoop();
+}
+
+/* menu 按鈕 */
+document.getElementById('menu-1p').addEventListener('click', () => { state.mode=1; switchScreen('CHAR_SELECT'); });
+document.getElementById('menu-2p').addEventListener('click', () => { state.mode=2; switchScreen('CHAR_SELECT'); });
+document.getElementById('menu-opt').addEventListener('click', () => switchScreen('OPTIONS'));
+document.getElementById('opt-back').addEventListener('click', () => switchScreen('TITLE'));
+document.getElementById('opt-prac').addEventListener('click', () => {
+    state.practice = !state.practice;
+    document.getElementById('opt-prac').innerText = "練習模式: " + (state.practice ? "開" : "關");
+    document.getElementById('practice-status').innerText = state.practice ? "開" : "關";
+});
+document.getElementById('opt-diff').addEventListener('click', () => {
+    state.difficultyIdx = (state.difficultyIdx + 1) % DIFFICULTY_LIST.length;
+    document.getElementById('opt-diff').innerText = "難度: " + DIFFICULTY_LIST[state.difficultyIdx].name;
+});
+
+/* 選角顯示更新 */
+function updateCharDisplay(){
+    document.getElementById('char-p1-select').innerText = "1P: " + CHARACTERS[state.p1Char].name;
+    document.getElementById('char-p2-select').innerText = (state.mode===1 ? "COM: " : "2P: ") + CHARACTERS[state.p2Char].name;
+}
+
+/* 切換畫面 */
+function switchScreen(name){
+    state.screen = name; state.menuIndex = 0;
+    document.querySelectorAll('.menu-box').forEach(el=>el.classList.add('hidden'));
+    document.getElementById('score-board').classList.add('hidden');
+    if (name==='TITLE') document.getElementById('main-menu').classList.remove('hidden');
+    else if (name==='CHAR_SELECT') { document.getElementById('char-select').classList.remove('hidden'); updateCharDisplay(); }
+    else if (name==='OPTIONS') document.getElementById('options-menu').classList.remove('hidden');
+    else if (name==='GAME') document.getElementById('score-board').classList.remove('hidden');
+    else if (name==='GAMEOVER') document.getElementById('game-over').classList.remove('hidden');
+}
+
+/* 鍵盤事件（含 key map） */
+const KEY_MAP = {
+    'KeyR':'P1_UP','KeyD':'P1_LEFT','KeyF':'P1_DOWN','KeyG':'P1_RIGHT','KeyJ':'P1_BTN',
+    'ArrowUp':'P2_UP','ArrowLeft':'P2_LEFT','ArrowDown':'P2_DOWN','ArrowRight':'P2_RIGHT','Enter':'P2_BTN',
+    'Escape':'ESC'
+};
+document.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    const action = KEY_MAP[e.code];
+    if (action) {
+        keys[action] = true;
+        // 在選單時阻止預設滾動
+        if (state.screen !== 'TITLE' || (action !== 'P1_UP' && action !== 'P1_DOWN' && action !== 'P1_LEFT' && action !== 'P1_RIGHT')) e.preventDefault();
+        processInput(action);
+    }
+});
+document.addEventListener('keyup', (e) => {
+    const action = KEY_MAP[e.code];
+    if (action) keys[action] = false;
+});
+
+/* 虛擬搖桿 - 支援 touch & mouse & pointer */
+function setupTouchButtons(){
+    document.querySelectorAll('#touch-controls [data-action]').forEach(btn=>{
+        // mouse
+        btn.addEventListener('mousedown', (e) => { e.preventDefault(); const a = btn.getAttribute('data-action'); keys[a]=true; processInput(a); });
+        btn.addEventListener('mouseup', (e) => { const a = btn.getAttribute('data-action'); keys[a]=false; });
+        // touch
+        btn.addEventListener('touchstart', (e) => { e.preventDefault(); const a=btn.getAttribute('data-action'); keys[a]=true; processInput(a); }, {passive:false});
+        btn.addEventListener('touchend', (e) => { e.preventDefault(); const a=btn.getAttribute('data-action'); keys[a]=false; }, {passive:false});
+        // pointer events for compatibility
+        btn.addEventListener('pointerdown', (e)=>{ e.preventDefault(); const a=btn.getAttribute('data-action'); keys[a]=true; processInput(a); });
+        btn.addEventListener('pointerup', (e)=>{ const a=btn.getAttribute('data-action'); keys[a]=false; });
+    });
+
+    // 全局 touch end：確保釋放所有按鍵（避免手指移出按鈕後卡住）
+    window.addEventListener('touchend', () => { document.querySelectorAll('#touch-controls [data-action]').forEach(b=>keys[b.getAttribute('data-action')]=false); }, {passive:true});
+    window.addEventListener('mouseup', () => { document.querySelectorAll('#touch-controls [data-action]').forEach(b=>keys[b.getAttribute('data-action')]=false); });
+}
+setupTouchButtons();
+
+/* 處理選單、按鍵行為 */
+function processInput(action){
+    if (action === 'ESC') {
+        const bar = document.getElementById('top-bar');
+        bar.style.display = bar.style.display === 'none' ? 'flex' : 'none';
+        return;
+    }
+    if (state.screen === 'TITLE') {
+        if (action === 'P1_UP' || action === 'P2_UP') state.menuIndex = (state.menuIndex - 1 + 3) % 3;
+        else if (action === 'P1_DOWN' || action === 'P2_DOWN') state.menuIndex = (state.menuIndex + 1) % 3;
+        else if (action === 'P1_BTN' || action === 'P2_BTN') {
+            if (state.menuIndex === 0) { state.mode = 1; switchScreen('CHAR_SELECT'); }
+            else if (state.menuIndex === 1) { state.mode = 2; switchScreen('CHAR_SELECT'); }
+            else switchScreen('OPTIONS');
+        }
+        updateMenuHighlight(['menu-1p','menu-2p','menu-opt']);
+    } else if (state.screen === 'CHAR_SELECT') {
+        if (action === 'P1_LEFT') state.p1Char = (state.p1Char - 1 + CHARACTERS.length) % CHARACTERS.length;
+        if (action === 'P1_RIGHT') state.p1Char = (state.p1Char + 1) % CHARACTERS.length;
+        if (action === 'P2_LEFT' && state.mode===2) state.p2Char = (state.p2Char - 1 + CHARACTERS.length) % CHARACTERS.length;
+        if (action === 'P2_RIGHT' && state.mode===2) state.p2Char = (state.p2Char + 1) % CHARACTERS.length;
+        updateCharDisplay();
+        if (action === 'P1_BTN' || action === 'P2_BTN') startGame();
+    } else if (state.screen === 'OPTIONS') {
+        if (action === 'P1_UP' || action === 'P2_UP') state.menuIndex = (state.menuIndex - 1 + 3) % 3;
+        else if (action === 'P1_DOWN' || action === 'P2_DOWN') state.menuIndex = (state.menuIndex + 1) % 3;
+        else if (action === 'P1_BTN' || action === 'P2_BTN') {
+            if (state.menuIndex === 0) {
+                state.difficultyIdx = (state.difficultyIdx + 1) % DIFFICULTY_LIST.length;
+                document.getElementById('opt-diff').innerText = "難度: " + DIFFICULTY_LIST[state.difficultyIdx].name;
+            } else if (state.menuIndex === 1) {
+                state.practice = !state.practice;
+                document.getElementById('opt-prac').innerText = "練習模式: " + (state.practice ? "開" : "關");
+                document.getElementById('practice-status').innerText = state.practice ? "開" : "關";
+            } else switchScreen('TITLE');
+        }
+        updateMenuHighlight(['opt-diff','opt-prac','opt-back']);
+    } else if (state.screen === 'GAMEOVER') {
+        if (action === 'P1_BTN' || action === 'P2_BTN') switchScreen('TITLE');
+    }
+}
+function updateMenuHighlight(ids){
+    ids.forEach((id,idx) => document.getElementById(id).classList.toggle('selected', idx === state.menuIndex));
+}
+
+/* ========= 遊戲控制與重置 ========= */
+function startGame(){
+    state.score1 = 0; state.score2 = 0;
+    document.querySelector('.p1-score').innerText = state.score1; document.querySelector('.p2-score').innerText = state.score2;
+    p1.x = 80; p1.y = GROUND_Y; p1.vx = 0; p1.vy = 0; p2.x = CANVAS_W - 80; p2.y = GROUND_Y; p2.vx = 0; p2.vy = 0;
+    resetBall(1);
+    switchScreen('GAME');
+}
+function resetBall(server){
+    ball.x = server === 1 ? 80 : CANVAS_W - 80;
+    ball.y = 120;
+    ball.vx = 0; ball.vy = 0; ball.isFire = false; ball.isServing = true;
+}
+
+/* ========= 重構後的更新函式群 ========= */
+
+/* --- AI 目標計算（預判 + 誤差 + 反應）--- */
+function getAiTargetX(ball, p2, diffObj) {
+    // diffObj: {reaction, anticipate, error}
+    const anticipation = diffObj.anticipate;
+    const error = diffObj.error;
+    const reaction = diffObj.reaction;
+
+    // 預判位置：根據球速與預判係數延伸
+    let predictX = ball.x + ball.vx * anticipation * 12;
+
+    // 加入誤差
+    predictX += (Math.random() - 0.5) * error * 120;
+
+    // 慢反應：有機率維持原地（模擬反應遲緩）
+    if (Math.random() > reaction) return p2.x;
+
+    // 限制在合理範圍
+    const leftBound = NET_X + p2.r + SAFE_MARGIN;
+    const rightBound = CANVAS_W - p2.r - SAFE_MARGIN;
+    if (predictX < leftBound) predictX = leftBound;
+    if (predictX > rightBound) predictX = rightBound;
+    return predictX;
+}
+
+/* --- 更新 AI 狀態 --- */
+function updateAI() {
+    if (state.mode !== 1) return;
+    const diff = DIFFICULTY_LIST[state.difficultyIdx];
+    // 決定 targetX
+    let targetX;
+    if (ball.x < NET_X) {
+        // 球在自己半場，略往前站位
+        targetX = NET_X + (CANVAS_W - NET_X) * 0.7;
+    } else {
+        targetX = getAiTargetX(ball, p2, diff);
+    }
+
+    // 用預測的位置決定左右移動
+    let shouldLeft = false, shouldRight = false, shouldUp = false, shouldDown = false;
+    if (Math.abs(p2.x - targetX) > 6) {
+        if (p2.x < targetX) shouldRight = true;
+        else shouldLeft = true;
+    }
+
+    // 判斷跳躍：如果球位於可擊球區上方且高度足夠
+    if (ball.x > NET_X && ball.y < p2.y - 60 && Math.abs(ball.x - p2.x) < 60 && p2.y >= GROUND_Y) {
+        if (Math.random() < diff.reaction) shouldUp = true;
+    }
+
+    // 判斷下蹲（潛水）
+    if (ball.y > p2.y - 45 && Math.abs(ball.x - p2.x) < 60) shouldDown = true;
+
+    p2.vx = shouldLeft ? -MOVE_SPEED : (shouldRight ? MOVE_SPEED : 0);
+    if (shouldUp && p2.y >= GROUND_Y) p2.vy = JUMP_POWER;
+    p2.isDiving = shouldDown;
+}
+
+/* --- 更新玩家移動與跳躍緩衝 --- */
+function updatePlayers(){
+    // P1
+    p1.vx = keys['P1_LEFT'] ? -MOVE_SPEED : (keys['P1_RIGHT'] ? MOVE_SPEED : 0);
+    // 跳躍緩衝：只有當 jumpBuffer == 0 且站在地面時才可跳
+    if (keys['P1_UP']) {
+        if (p1.jumpBuffer === 0 && p1.y >= GROUND_Y - 1) {
+            p1.vy = JUMP_POWER;
+            p1.jumpBuffer = 10;
+        }
+    } else {
+        p1.jumpBuffer = Math.max(0, p1.jumpBuffer - 1);
+    }
+    p1.isDiving = !!keys['P1_DOWN'];
+
+    // P2（若為人類控制）
+    if (state.mode === 2) {
+        p2.vx = keys['P2_LEFT'] ? -MOVE_SPEED : (keys['P2_RIGHT'] ? MOVE_SPEED : 0);
+        if (keys['P2_UP']) {
+            if (p2.jumpBuffer === 0 && p2.y >= GROUND_Y - 1) {
+                p2.vy = JUMP_POWER;
+                p2.jumpBuffer = 10;
+            }
+        } else {
+            p2.jumpBuffer = Math.max(0, p2.jumpBuffer - 1);
+        }
+        p2.isDiving = !!keys['P2_DOWN'];
+    }
+    // apply gravity & integrate for players
+    [p1,p2].forEach(p => {
+        p.vy += GRAVITY;
+        p.x += p.vx;
+        p.y += p.vy;
+        if (p.y > GROUND_Y) { p.y = GROUND_Y; p.vy = 0; }
+        // 限制左右區域
+        let limitL = p === p1 ? p.r : NET_X + p.r;
+        let limitR = p === p1 ? NET_X - p.r : CANVAS_W - p.r;
+        if (p.x < limitL) p.x = limitL;
+        if (p.x > limitR) p.x = limitR;
+    });
+}
+
+/* --- 取得距離 --- */
+function dist(ax,ay,bx,by) { return Math.hypot(ax-bx, ay-by); }
+
+/* --- 計算殺球角度（較合理, 朝對方場地下方）--- */
+function getSmashAngle(p) {
+    // P1 往右下 (大約 45~60 度下方)，P2 往左下
+    const baseDeg = 50 * Math.PI / 180; // 50°
+    const randomness = (Math.random() - 0.5) * (12 * Math.PI/180); // ±12°
+    if (p === p1) {
+        // 右下：向右且向下 => angle in radians from +x axis
+        return (Math.PI/2) + (Math.PI/2) + baseDeg + randomness - Math.PI; // result ~ ( - (π/4) ... ) simplified later
+        // simpler: directly compute vector later via cos/sin by sign flip
+    } else {
+        return -(baseDeg + randomness); // 左下方向 (negative small angle)
+    }
+}
+
+/* --- 更新球的物理與碰撞 --- */
+function updateBall(){
+    // 單純整合運動
+    ball.vy += GRAVITY * 0.6;
+    ball.x += ball.vx;
+    ball.y += ball.vy;
+    ball.rot += ball.vx * 0.05;
+
+    // 邊界反彈
+    if (ball.x < ball.r) { ball.vx *= -0.8; ball.x = ball.r; ball.isFire = false; }
+    if (ball.x > CANVAS_W - ball.r) { ball.vx *= -0.8; ball.x = CANVAS_W - ball.r; ball.isFire = false; }
+    if (ball.y < ball.r) { ball.vy *= -0.8; ball.y = ball.r; ball.isFire = false; }
+
+    // 網子碰撞
+    if (ball.y > GROUND_Y - NET_H) {
+        if (Math.abs(ball.x - NET_X) < ball.r + SAFE_MARGIN) {
+            ball.isFire = false;
+            if (ball.y < GROUND_Y - NET_H + NET_BOUNCE_TOP && ball.vy > 0) {
+                ball.y = GROUND_Y - NET_H - ball.r; ball.vy *= -0.8;
+            } else {
+                ball.x = ball.x < NET_X ? NET_X - SAFE_MARGIN - ball.r : NET_X + SAFE_MARGIN + ball.r;
+                ball.vx *= -0.8;
+            }
+        }
+    }
+
+    // 與玩家的碰撞（包含殺球判定）
+    [p1,p2].forEach(p => {
+        const dyOffset = p.isDiving ? 15 : 0;
+        const dx = ball.x - p.x;
+        const dy = ball.y - (p.y - p.r + dyOffset);
+        const distance = Math.hypot(dx, dy);
+        const isIdealForSmash = (p.y < GROUND_Y - 20 && ball.y < p.y - p.r / 2);
+
+        if (distance < ball.r + p.r) {
+            ball.isServing = false;
+            // 計算基於位置的角度（以球相對玩家位置為基準）
+            let angle = Math.atan2(dy, dx);
+            let speed = BALL_NORMAL_SPEED;
+
+            // 判斷是否為強力殺球：球在合適位置且玩家按下殺球鍵（COM 若符合條件自動判）
+            let playerPressed = (p === p1 && keys['P1_BTN']) || (p === p2 && keys['P2_BTN']);
+            let isPower = isIdealForSmash && (playerPressed || (p === p2 && state.mode === 1)); // AI 若在理想位置視情況殺球
+
+            if (isPower) {
+                speed = BALL_POWER_SPEED;
+                // 設定更合理的角度：P1 -> 右下，P2 -> 左下，但加入位置修正避免把球打回己方
+                if (p === p1) {
+                    // 右下方向，取 40~60 度下斜角
+                    const deg = (40 + Math.random()*20) * Math.PI/180; // 40~60 deg
+                    angle = -deg; // 往右下 (在 canvas 角度上是負)
+                } else {
+                    const deg = (40 + Math.random()*20) * Math.PI/180;
+                    angle = Math.PI + deg; // 往左下
+                }
+                ball.isFire = true;
+            } else {
+                ball.isFire = false;
+                // 普通反彈：如果球正往下且玩家未下潛，給予一個向上反彈
+                if (ball.vy > 0 && !p.isDiving) ball.vy = -12;
+            }
+
+            // 設定速度向量
+            ball.vx = Math.cos(angle) * speed;
+            ball.vy = Math.sin(angle) * speed;
+            // 避免黏在玩家內，直接移出
+            ball.x += ball.vx * 2;
+            ball.y += ball.vy * 2;
+        }
+    });
+}
+
+/* --- 得分判斷 --- */
+function checkScore(){
+    if (ball.y > GROUND_Y - ball.r + 5) {
+        ball.isFire = false;
+        if (state.practice) {
+            ball.y = GROUND_Y - ball.r; ball.vy = -15;
+        } else {
+            if (ball.x < NET_X) state.score2++; else state.score1++;
+            document.querySelector('.p1-score').innerText = state.score1;
+            document.querySelector('.p2-score').innerText = state.score2;
+            if (state.score1 >= 15 || state.score2 >= 15) {
+                state.winner = state.score1 >= 15 ? 1 : 2;
+                document.getElementById('winner-text').innerText = (state.winner === 1 ? "1P" : "2P") + " 勝利!";
+                document.getElementById('winner-text').style.color = state.winner === 1 ? "#FF4081" : "#2196F3";
+                switchScreen('GAMEOVER');
+            } else {
+                // 發球方為失誤方相反
+                resetBall(ball.x < NET_X ? 2 : 1);
+            }
+        }
+    }
+}
+
+/* ========= 繪圖 ========= */
+function drawScene(){
+    ctx.clearRect(0,0,CANVAS_W,CANVAS_H);
+    // 地板
+    ctx.fillStyle = "#E6C288"; ctx.fillRect(0, GROUND_Y, CANVAS_W, CANVAS_H - GROUND_Y);
+    ctx.fillStyle = "#A0522D"; ctx.fillRect(0, GROUND_Y, CANVAS_W, 9);
+    // 網子
+    ctx.fillStyle = "#FFF"; ctx.fillRect(NET_X - 4.5, GROUND_Y - NET_H, 9, NET_H);
+
+    if (state.screen === 'GAME' || state.screen === 'GAMEOVER' || state.screen === 'CHAR_SELECT') {
+        drawCharacter(p1, state.p1Char, false);
+        drawCharacter(p2, state.p2Char, true);
+        drawBall();
+    }
+}
+
+/* draw helpers */
+function drawCharacter(p, charIdx, flip) {
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    if (flip) ctx.scale(-1,1);
+    ctx.scale(1.2,1.2);
+    if (p.isDiving) ctx.scale(1,0.75);
+    CHARACTERS[charIdx].draw(ctx);
+    ctx.restore();
+}
+
+function drawBall(){
+    ctx.save();
+    ctx.translate(ball.x, ball.y);
+    ctx.rotate(ball.rot);
+    if (ball.isFire) { ctx.shadowBlur = 30; ctx.shadowColor = "#FF4500"; } else ctx.shadowBlur = 0;
+    ctx.beginPath(); ctx.arc(0,0,ball.r,0,Math.PI*2); ctx.fillStyle="#FFD700"; ctx.fill();
+    ctx.clip();
+    ctx.fillStyle = "#0055A4";
+    // 球紋 (簡化)
+    ctx.beginPath(); ctx.moveTo(-ball.r, -ball.r/2); ctx.bezierCurveTo(-ball.r/2, 0, ball.r/2, 0, ball.r, -ball.r/2); ctx.lineTo(ball.r, ball.r/2);
+    ctx.bezierCurveTo(ball.r/2, 0, -ball.r/2, 0, -ball.r, ball.r/2); ctx.fill();
+    ctx.beginPath(); ctx.arc(0,0,ball.r,0,Math.PI*2); ctx.strokeStyle = ball.isFire ? "#FF0000" : "#333"; ctx.lineWidth=2; ctx.stroke();
+    ctx.restore();
+}
+
+/* ========= 主迴圈 ========= */
+let gameLoopId = null;
+function gameLoop(){
+    if (state.screen === 'GAME') {
+        if (state.mode === 1) updateAI();
+        updatePlayers();
+        updateBall();
+        checkScore();
+    }
+    drawScene();
+    gameLoopId = requestAnimationFrame(gameLoop);
+}
+function startGameLoop(){
+    if (gameLoopId) return;
+    gameLoop();
+}
+
+/* ========= 畫布尺寸 & 行動裝置自適應 ========= */
+function resizeCanvasToDisplay(){
+    // 固定畫布內部解析度
+    canvas.width = CANVAS_W;
+    canvas.height = CANVAS_H;
+    // CSS 寬度已由樣式控制 (100% 最大 648px)
+    // 同步調整 touch-controls 寬度 (確保搖桿寬度與畫布一致)
+    const rect = canvas.getBoundingClientRect();
+    document.getElementById('touch-controls').style.maxWidth = rect.width + 'px';
+}
+window.addEventListener('resize', resizeCanvasToDisplay);
+resizeCanvasToDisplay();
+
+/* ========= 啟動 & 公用功能 ========= */
+// 監聽選角按鍵 J/Enter（用於開始/確認）
+function startGameFromMenu(){
+    if (state.screen === 'CHAR_SELECT') startGame();
+}
+document.addEventListener('keypress', (e) => {
+    if (e.code === 'KeyJ' || e.code === 'Enter') {
+        if (state.screen === 'CHAR_SELECT') startGame();
+        else if (state.screen === 'GAMEOVER') switchScreen('TITLE');
+    }
+});
+
+/* 設定初始畫面 */
+switchScreen('TITLE');
+
+/* 最後：啟動 loop 與 focus */
+gameContainer.addEventListener('focus', () => {});
+// 如果使用者在未點擊情況下按鍵（桌機）也能啟動
+document.addEventListener('keydown', (e) => {
+    // 在 TITLE 下按 J 開始
+    if ((e.code === 'KeyJ' || e.code === 'Enter') && state.screen === 'TITLE') {
+        state.mode = 1; switchScreen('CHAR_SELECT'); updateCharDisplay();
+    }
+});
+
+/* 立即開始 game loop（等使用者點擊 initFocus 隱藏啟動畫面） */
+startGameLoop();
+
+</script>
+</body>
+</html>
